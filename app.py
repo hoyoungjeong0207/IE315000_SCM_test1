@@ -676,102 +676,94 @@ with tab_admin:
     if pwd != ADMIN_PASSWORD:
         if pwd:
             st.error("Incorrect password.")
-        st.stop()
-
-    st.success("Authenticated.")
-    st.markdown("---")
-
-    rows = db.get_all_submissions()
-
-    if not rows:
-        st.info("No submissions in the database.")
     else:
-        all_df = pd.DataFrame(rows)
-        all_df["Feasible"] = all_df["is_feasible"].map({1: "✅", 0: "❌"})
-        all_df = all_df.rename(columns={
-            "id":              "ID",
-            "submitted_at":    "Time",
-            "student_id":      "Student ID",
-            "student_name":    "Name",
-            "score":           "Score",
-            "objective_value": "Obj. Cost",
-        })
-
-        st.markdown(f"**Total submissions:** {len(all_df)}")
-        st.dataframe(all_df[["ID","Time","Student ID","Name","Score","Obj. Cost","Feasible"]],
-                     use_container_width=True, hide_index=True)
-
+        st.success("Authenticated.")
         st.markdown("---")
-        st.subheader("Delete Submissions")
 
-        # Filter options
-        filter_col, _ = st.columns([2, 1])
-        with filter_col:
-            filter_text = st.text_input(
-                "Filter by Name or Student ID (leave blank to show all)",
-                placeholder="e.g. test, 2021...",
-            ).strip()
+        rows = db.get_all_submissions()
 
-        if filter_text:
-            mask = (
-                all_df["Name"].str.contains(filter_text, case=False, na=False) |
-                all_df["Student ID"].str.contains(filter_text, case=False, na=False)
-            )
-            filtered_df = all_df[mask]
+        # ── Delete submissions ────────────────────────────────────────────────
+        st.subheader("🗑️ Delete Submissions")
+
+        if not rows:
+            st.info("No submissions in the database.")
         else:
-            filtered_df = all_df
+            all_df = pd.DataFrame(rows)
+            all_df["Feasible"] = all_df["is_feasible"].map({1: "✅", 0: "❌"})
+            all_df = all_df.rename(columns={
+                "id":              "ID",
+                "submitted_at":    "Time",
+                "student_id":      "Student ID",
+                "student_name":    "Name",
+                "score":           "Score",
+                "objective_value": "Obj. Cost",
+            })
 
-        if filtered_df.empty:
-            st.info("No matching submissions.")
-        else:
-            st.markdown(f"**{len(filtered_df)} matching submission(s):**")
-            st.dataframe(filtered_df[["ID","Time","Student ID","Name","Score","Feasible"]],
+            st.markdown(f"**Total submissions:** {len(all_df)}")
+            st.dataframe(all_df[["ID","Time","Student ID","Name","Score","Obj. Cost","Feasible"]],
                          use_container_width=True, hide_index=True)
 
-            options = [
-                f"[{row['ID']}] {row['Name']} ({row['Student ID']}) — {row['Time']}"
-                for _, row in filtered_df.iterrows()
-            ]
-            id_map = {opt: int(filtered_df.iloc[i]["ID"]) for i, opt in enumerate(options)}
+            st.markdown("---")
+            filter_col, _ = st.columns([2, 1])
+            with filter_col:
+                filter_text = st.text_input(
+                    "Filter by Name or Student ID (leave blank to show all)",
+                    placeholder="e.g. test, 2021...",
+                ).strip()
 
-            selected = st.multiselect("Select entries to delete", options=options)
+            if filter_text:
+                mask = (
+                    all_df["Name"].str.contains(filter_text, case=False, na=False) |
+                    all_df["Student ID"].str.contains(filter_text, case=False, na=False)
+                )
+                filtered_df = all_df[mask]
+            else:
+                filtered_df = all_df
 
-            if selected:
-                st.warning(f"⚠️ About to delete **{len(selected)}** submission(s). This cannot be undone.")
-                if st.button("🗑️ Delete Selected", type="primary"):
-                    ids_to_delete = [id_map[s] for s in selected]
-                    deleted = db.delete_submissions(ids_to_delete)
-                    st.success(f"Deleted {deleted} submission(s).")
-                    st.rerun()
+            if filtered_df.empty:
+                st.info("No matching submissions.")
+            else:
+                st.markdown(f"**{len(filtered_df)} matching submission(s):**")
+                st.dataframe(filtered_df[["ID","Time","Student ID","Name","Score","Feasible"]],
+                             use_container_width=True, hide_index=True)
 
-    # ── Resubmit permission ───────────────────────────────────────────────────
-    st.markdown("---")
-    st.subheader("🔓 Grant Resubmit Permission")
-    st.caption("Students with a resubmit token can submit once more. Token is consumed after use.")
+                options = [
+                    f"[{row['ID']}] {row['Name']} ({row['Student ID']}) — {row['Time']}"
+                    for _, row in filtered_df.iterrows()
+                ]
+                id_map = {opt: int(filtered_df.iloc[i]["ID"]) for i, opt in enumerate(options)}
 
-    tokens = db.get_resubmit_tokens()
-    if tokens:
-        st.markdown("**Currently granted:** " + ", ".join(tokens))
-    else:
-        st.markdown("**Currently granted:** None")
+                selected = st.multiselect("Select entries to delete", options=options)
 
-    # Build list of students who have submitted (excluding test)
-    submitted_ids = list({r["student_id"] for r in rows if r["student_name"].lower() != "test"})
-    submitted_ids.sort()
+                if selected:
+                    st.warning(f"⚠️ About to delete **{len(selected)}** submission(s). This cannot be undone.")
+                    if st.button("🗑️ Delete Selected", type="primary"):
+                        ids_to_delete = [id_map[s] for s in selected]
+                        deleted = db.delete_submissions(ids_to_delete)
+                        st.success(f"Deleted {deleted} submission(s).")
+                        st.rerun()
 
-    grant_targets = st.multiselect(
-        "Select students to grant resubmit permission",
-        options=submitted_ids,
-        default=[sid for sid in submitted_ids if sid in tokens],
-    )
+        # ── Resubmit permission ───────────────────────────────────────────────
+        st.markdown("---")
+        st.subheader("🔓 Grant Resubmit Permission")
+        st.caption("Students with a resubmit token can submit once more. Token is consumed after use.")
 
-    if st.button("💾 Save Resubmit Permissions"):
-        # Grant newly selected
-        for sid in grant_targets:
-            db.grant_resubmit(sid)
-        # Revoke deselected
-        for sid in tokens:
-            if sid not in grant_targets:
-                db.consume_resubmit_token(sid)
-        st.success("Resubmit permissions updated.")
-        st.rerun()
+        tokens = db.get_resubmit_tokens()
+        st.markdown("**Currently granted:** " + (", ".join(tokens) if tokens else "None"))
+
+        submitted_ids = sorted({r["student_id"] for r in rows if r["student_name"].lower() != "test"})
+
+        grant_targets = st.multiselect(
+            "Select students to grant resubmit permission",
+            options=submitted_ids,
+            default=[sid for sid in submitted_ids if sid in tokens],
+        )
+
+        if st.button("💾 Save Resubmit Permissions"):
+            for sid in grant_targets:
+                db.grant_resubmit(sid)
+            for sid in tokens:
+                if sid not in grant_targets:
+                    db.consume_resubmit_token(sid)
+            st.success("Resubmit permissions updated.")
+            st.rerun()
