@@ -661,7 +661,7 @@ with tab_admin:
     st.header("⚙️ Admin Panel")
 
     pwd = st.text_input("Password", type="password")
-    ADMIN_PASSWORD = "iolab2026"
+    ADMIN_PASSWORD = "1234IE315000"
 
     if pwd != ADMIN_PASSWORD:
         if pwd:
