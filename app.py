@@ -49,6 +49,121 @@ def feasibility_badge(is_feasible: bool) -> str:
 
 # ── Network diagram ───────────────────────────────────────────────────────────
 
+def draw_solution_network(solution: dict) -> plt.Figure:
+    """Draw the supply chain network with actual flows from a submitted solution."""
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.set_xlim(0, 10)
+    ax.set_ylim(0, 10)
+    ax.axis("off")
+    fig.patch.set_facecolor("#0e1117")
+    ax.set_facecolor("#0e1117")
+
+    suppliers  = {"S1": (1.0, 7.0), "S2": (1.0, 3.0)}
+    facilities = {"F1": (5.0, 8.2), "F2": (5.0, 5.0), "F3": (5.0, 1.8)}
+    customers  = {"C1": (9.0, 8.5), "C2": (9.0, 6.2), "C3": (9.0, 3.8), "C4": (9.0, 1.5)}
+
+    NODE_R   = 0.50
+    C_SUPPLY = "#4fc3f7"
+    C_FAC_ON = "#81c784"
+    C_FAC_OFF= "#555555"
+    C_CUST   = "#ffb74d"
+    TXT_DARK = "#0e1117"
+    TXT_WHITE= "white"
+
+    y_vars  = solution.get("y", {})
+    xsf     = solution.get("x_sf", {})
+    xfc     = solution.get("x_fc", {})
+
+    # Compute max flow for normalising line widths
+    all_flows = (
+        [v for sd in xsf.values() for v in sd.values()] +
+        [v for fd in xfc.values() for v in fd.values()]
+    )
+    max_flow = max(all_flows) if all_flows else 1.0
+
+    def draw_node(pos, label, color):
+        circle = plt.Circle(pos, NODE_R, color=color, zorder=3)
+        ax.add_patch(circle)
+        txt_color = TXT_DARK if color not in (C_FAC_OFF,) else TXT_WHITE
+        ax.text(pos[0], pos[1], label, ha="center", va="center",
+                fontsize=10, fontweight="bold", color=txt_color, zorder=4)
+
+    def draw_flow_arrow(src, dst, flow, color):
+        if flow < 1e-6:
+            return
+        lw = 0.8 + 4.0 * (flow / max_flow)
+        dx, dy = dst[0] - src[0], dst[1] - src[1]
+        dist = (dx**2 + dy**2) ** 0.5
+        ux, uy = dx / dist, dy / dist
+        x0 = src[0] + ux * NODE_R
+        y0 = src[1] + uy * NODE_R
+        x1 = dst[0] - ux * NODE_R
+        y1 = dst[1] - uy * NODE_R
+        ax.annotate(
+            "", xy=(x1, y1), xytext=(x0, y0),
+            arrowprops=dict(
+                arrowstyle="-|>", color=color,
+                lw=lw, alpha=0.85, mutation_scale=14,
+            ),
+            zorder=2,
+        )
+        # Label flow value at midpoint
+        mx, my = (x0 + x1) / 2, (y0 + y1) / 2
+        ax.text(mx, my, f"{flow:.0f}", fontsize=7.5, color=color,
+                ha="center", va="center",
+                bbox=dict(boxstyle="round,pad=0.15", fc="#0e1117", ec="none", alpha=0.7),
+                zorder=5)
+
+    # Tier labels
+    for x, label, col in [(1.0, "Suppliers", C_SUPPLY),
+                           (5.0, "Facilities", C_FAC_ON),
+                           (9.0, "Customers", C_CUST)]:
+        ax.text(x, 9.6, label, ha="center", va="center",
+                fontsize=11, fontweight="bold", color=col)
+
+    # Supplier → Facility flows
+    for si, fdict in xsf.items():
+        for fj, flow in fdict.items():
+            if si in suppliers and fj in facilities:
+                draw_flow_arrow(suppliers[si], facilities[fj], flow, C_SUPPLY)
+
+    # Facility → Customer flows
+    for fj, cdict in xfc.items():
+        for ck, flow in cdict.items():
+            if fj in facilities and ck in customers:
+                draw_flow_arrow(facilities[fj], customers[ck], flow, C_CUST)
+
+    # Nodes
+    for label, pos in suppliers.items():
+        draw_node(pos, label, C_SUPPLY)
+    for label, pos in facilities.items():
+        is_open = y_vars.get(label, 0) == 1
+        draw_node(pos, label, C_FAC_ON if is_open else C_FAC_OFF)
+        status = "OPEN" if is_open else "CLOSED"
+        status_col = C_FAC_ON if is_open else "#888888"
+        ax.text(pos[0], pos[1] - NODE_R - 0.18, status,
+                ha="center", va="top", fontsize=7.5,
+                color=status_col, fontweight="bold", zorder=4)
+    for label, pos in customers.items():
+        draw_node(pos, label, C_CUST)
+
+    # Legend
+    legend_items = [
+        mpatches.Patch(color=C_SUPPLY,  label="Supplier"),
+        mpatches.Patch(color=C_FAC_ON,  label="Facility (open)"),
+        mpatches.Patch(color=C_FAC_OFF, label="Facility (closed)"),
+        mpatches.Patch(color=C_CUST,    label="Customer"),
+    ]
+    ax.legend(handles=legend_items, loc="lower center", ncol=4, fontsize=8.5,
+              facecolor="#1e2129", edgecolor="gray", labelcolor=TXT_WHITE,
+              bbox_to_anchor=(0.5, -0.04))
+
+    ax.set_title("Solution Flow Network  (arrow width ∝ flow volume)",
+                 color=TXT_WHITE, fontsize=11, pad=10)
+    plt.tight_layout()
+    return fig
+
+
 def draw_network() -> plt.Figure:
     """Draw a three-tier supply chain network diagram."""
     fig, ax = plt.subplots(figsize=(10, 5))
@@ -270,6 +385,10 @@ with tab_submit:
         # Open facilities summary
         open_facs = [j for j, v in solution["y"].items() if v == 1]
         st.markdown(f"**Open facilities:** {', '.join(open_facs) if open_facs else 'None'}")
+
+        # Solution flow network diagram
+        st.markdown("#### 🔗 Flow Network Visualization")
+        st.pyplot(draw_solution_network(solution), use_container_width=True)
 
         # Feasibility violations
         if feas_result["violations"]:
