@@ -158,6 +158,31 @@ def get_student_history(student_id: str, db_path: Path = DB_PATH) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_all_submissions(db_path: Path = DB_PATH) -> list[dict]:
+    """Return every submission row for admin review, newest first."""
+    with _connect(db_path) as conn:
+        rows = conn.execute("""
+            SELECT id, submitted_at, student_id, student_name,
+                   score, objective_value, is_feasible
+            FROM submissions
+            ORDER BY submitted_at DESC
+        """).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_submissions(ids: list[int], db_path: Path = DB_PATH) -> int:
+    """Delete submissions by row id list. Returns number of rows deleted."""
+    if not ids:
+        return 0
+    placeholders = ",".join("?" * len(ids))
+    with _connect(db_path) as conn:
+        cursor = conn.execute(
+            f"DELETE FROM submissions WHERE id IN ({placeholders})", ids
+        )
+        conn.commit()
+    return cursor.rowcount
+
+
 def get_rank(student_id: str, db_path: Path = DB_PATH) -> tuple[int, int]:
     """
     Return (rank, total_students) for the student's best score.
