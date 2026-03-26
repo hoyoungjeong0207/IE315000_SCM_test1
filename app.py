@@ -33,6 +33,27 @@ st.set_page_config(
 
 db.init_db()
 
+# ── Load student roster ───────────────────────────────────────────────────────
+
+from pathlib import Path
+import glob as _glob
+
+def _load_roster() -> dict[str, str]:
+    """Return {student_id: name} from the first CSV found in student/."""
+    pattern = str(Path(__file__).parent / "student" / "*.csv")
+    files = _glob.glob(pattern)
+    if not files:
+        return {}
+    df = pd.read_csv(files[0], dtype=str, encoding="utf-8-sig")
+    df.columns = [c.strip() for c in df.columns]
+    id_col   = next((c for c in df.columns if "id" in c.lower() or "학번" in c), None)
+    name_col = next((c for c in df.columns if "name" in c.lower() or "이름" in c), None)
+    if not id_col or not name_col:
+        return {}
+    return {row[id_col].strip(): row[name_col].strip() for _, row in df.iterrows()}
+
+ROSTER: dict[str, str] = _load_roster()
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def score_color(score: int) -> str:
@@ -317,6 +338,18 @@ with tab_submit:
                     st.error(e)
                 st.session_state.pop("checked", None)
                 st.stop()
+
+            # Roster check
+            if ROSTER:
+                if student_id not in ROSTER:
+                    st.error("❌ Student ID not found in the class roster. Please check your ID.")
+                    st.session_state.pop("checked", None)
+                    st.stop()
+                roster_name = ROSTER[student_id]
+                if student_name != roster_name:
+                    st.error(f"❌ Name does not match the roster. Expected: **{roster_name}**")
+                    st.session_state.pop("checked", None)
+                    st.stop()
 
             # Parse + evaluate (no DB write)
             with st.spinner("Parsing and evaluating your solution…"):
