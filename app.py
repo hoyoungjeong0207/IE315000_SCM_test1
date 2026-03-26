@@ -297,127 +297,144 @@ with tab_submit:
         help="Two columns: 'variable' and 'value'. See the Problem tab for format.",
     )
 
-    submit_btn = st.button("🚀 Submit", type="primary", use_container_width=True)
+    check_btn = st.button("🔍 Check Solution", use_container_width=True)
 
-    if submit_btn:
-        # ── Input validation ──────────────────────────────────────────────────
-        input_errors = []
-        if not student_id:
-            input_errors.append("Student ID is required.")
-        if not student_name:
-            input_errors.append("Student Name is required.")
-        if uploaded is None:
-            input_errors.append("Please upload a CSV file.")
+    # ── STEP 1: Check ─────────────────────────────────────────────────────────
+    if check_btn or st.session_state.get("checked"):
 
-        if input_errors:
-            for e in input_errors:
-                st.error(e)
-            st.stop()
+        if check_btn:
+            # Validate inputs
+            input_errors = []
+            if not student_id:
+                input_errors.append("Student ID is required.")
+            if not student_name:
+                input_errors.append("Student Name is required.")
+            if uploaded is None:
+                input_errors.append("Please upload a CSV file.")
 
-        # ── Save raw CSV text ─────────────────────────────────────────────────
-        raw_bytes = uploaded.read()
-        raw_csv   = raw_bytes.decode("utf-8-sig", errors="replace")
-        uploaded.seek(0)  # reset for parser
-
-        # ── Pipeline ──────────────────────────────────────────────────────────
-        with st.spinner("Parsing and evaluating your submission…"):
-
-            # Step 1 — Parse
-            ok, parse_errors, solution = csv_parser.parse_csv(uploaded)
-
-            if not ok:
-                st.error("### ❌ CSV Parse Error")
-                for e in parse_errors:
+            if input_errors:
+                for e in input_errors:
                     st.error(e)
+                st.session_state.pop("checked", None)
                 st.stop()
 
-            if parse_errors:  # warnings only
-                for w in parse_errors:
-                    st.warning(w)
+            # Parse + evaluate (no DB write)
+            with st.spinner("Parsing and evaluating your solution…"):
+                raw_bytes = uploaded.read()
+                raw_csv   = raw_bytes.decode("utf-8-sig", errors="replace")
+                uploaded.seek(0)
 
-            # Step 2 — Feasibility
-            feas_result = feas_mod.check_feasibility(solution)
+                ok, parse_errors, solution = csv_parser.parse_csv(uploaded)
 
-            # Step 3 — Objective
-            obj_result = scoring_mod.compute_objective(solution)
+                if not ok:
+                    st.error("### ❌ CSV Parse Error")
+                    for e in parse_errors:
+                        st.error(e)
+                    st.session_state.pop("checked", None)
+                    st.stop()
 
-            # Step 4 — Score
-            score_result = scoring_mod.compute_score(obj_result, feas_result)
+                if parse_errors:
+                    for w in parse_errors:
+                        st.warning(w)
 
-            # Step 5 — Persist
-            submission_id = db.save_submission(
-                student_id   = student_id,
-                student_name = student_name,
-                score_result = score_result,
-                obj_result   = obj_result,
-                feas_result  = feas_result,
-                raw_csv      = raw_csv,
-            )
+                feas_result  = feas_mod.check_feasibility(solution)
+                obj_result   = scoring_mod.compute_objective(solution)
+                score_result = scoring_mod.compute_score(obj_result, feas_result)
 
-            rank, total = db.get_rank(student_id)
+            # Cache results for the Submit button below
+            st.session_state["checked"]      = True
+            st.session_state["solution"]     = solution
+            st.session_state["raw_csv"]      = raw_csv
+            st.session_state["feas_result"]  = feas_result
+            st.session_state["obj_result"]   = obj_result
+            st.session_state["score_result"] = score_result
+            st.session_state["student_id"]   = student_id
+            st.session_state["student_name"] = student_name
 
-        # ── Results display ────────────────────────────────────────────────────
-        st.markdown("---")
-        st.subheader("📊 Submission Results")
+        # ── Preview results ───────────────────────────────────────────────────
+        if st.session_state.get("checked"):
+            solution     = st.session_state["solution"]
+            feas_result  = st.session_state["feas_result"]
+            obj_result   = st.session_state["obj_result"]
+            score_result = st.session_state["score_result"]
 
-        # Score + rank highlight
-        c1, c2, c3 = st.columns(3)
-        sc = score_result["score"]
-        c1.metric("Final Score", f"{sc:,} / 10,000")
-        c2.metric("Feasibility", feasibility_badge(feas_result["is_feasible"]))
-        c3.metric(
-            "Leaderboard Rank",
-            f"#{rank} of {total}" if rank else "N/A",
-        )
+            st.markdown("---")
+            st.subheader("📊 Preview Results")
 
-        # Objective breakdown
-        st.markdown("#### Cost Breakdown")
-        cost_df = pd.DataFrame([
-            {"Component": "Fixed facility cost",          "Value": obj_result["fixed_cost"]},
-            {"Component": "Transport: supplier→facility", "Value": obj_result["transport_cost_sf"]},
-            {"Component": "Transport: facility→customer", "Value": obj_result["transport_cost_fc"]},
-            {"Component": "**Total objective cost**",     "Value": obj_result["total_cost"]},
-            {"Component": "Infeasibility penalty",        "Value": score_result["penalty"]},
-            {"Component": "**Effective cost (scored)**",  "Value": score_result["effective_cost"]},
-        ])
-        st.dataframe(cost_df, use_container_width=True, hide_index=True)
+            c1, c2 = st.columns(2)
+            c1.metric("Feasibility", feasibility_badge(feas_result["is_feasible"]))
+            c2.metric("Estimated Score", f"{score_result['score']:,} / 10,000")
 
-        # Open facilities summary
-        open_facs = [j for j, v in solution["y"].items() if v == 1]
-        st.markdown(f"**Open facilities:** {', '.join(open_facs) if open_facs else 'None'}")
+            # Cost breakdown
+            st.markdown("#### Cost Breakdown")
+            cost_df = pd.DataFrame([
+                {"Component": "Fixed facility cost",          "Value": obj_result["fixed_cost"]},
+                {"Component": "Transport: supplier→facility", "Value": obj_result["transport_cost_sf"]},
+                {"Component": "Transport: facility→customer", "Value": obj_result["transport_cost_fc"]},
+                {"Component": "**Total objective cost**",     "Value": obj_result["total_cost"]},
+                {"Component": "Infeasibility penalty",        "Value": score_result["penalty"]},
+                {"Component": "**Effective cost (scored)**",  "Value": score_result["effective_cost"]},
+            ])
+            st.dataframe(cost_df, use_container_width=True, hide_index=True)
 
-        # Solution flow network diagram
-        st.markdown("#### 🔗 Flow Network Visualization")
-        st.pyplot(draw_solution_network(solution), use_container_width=True)
+            # Open facilities
+            open_facs = [j for j, v in solution["y"].items() if v == 1]
+            st.markdown(f"**Open facilities:** {', '.join(open_facs) if open_facs else 'None'}")
 
-        # Feasibility violations
-        if feas_result["violations"]:
-            st.markdown("#### ⚠️ Constraint Violations")
-            st.warning(
-                f"{len(feas_result['violations'])} violation(s) found. "
-                f"Total penalty: **{score_result['penalty']:,.0f}**"
-            )
-            viol_df = pd.DataFrame(feas_result["violations"])
-            st.dataframe(viol_df, use_container_width=True, hide_index=True)
-        else:
-            st.success("All constraints satisfied — solution is feasible.")
+            # Flow network visualization
+            st.markdown("#### 🔗 Flow Network Visualization")
+            st.pyplot(draw_solution_network(solution), use_container_width=True)
 
-        # History for this student
-        history = db.get_student_history(student_id)
-        if len(history) > 1:
-            st.markdown("#### 📈 Your Submission History")
-            hist_df = pd.DataFrame(history)
-            hist_df = hist_df.rename(columns={
-                "submitted_at":    "Time",
-                "score":           "Score",
-                "objective_value": "Obj. Cost",
-                "penalty":         "Penalty",
-                "is_feasible":     "Feasible",
-                "violation_count": "Violations",
-            })
-            hist_df["Feasible"] = hist_df["Feasible"].map({1: "✅", 0: "❌"})
-            st.dataframe(hist_df[["Time","Score","Obj. Cost","Penalty","Feasible","Violations"]],
-                         use_container_width=True, hide_index=True)
+            # Feasibility violations
+            if feas_result["violations"]:
+                st.markdown("#### ⚠️ Constraint Violations")
+                st.warning(
+                    f"{len(feas_result['violations'])} violation(s) found. "
+                    f"Total penalty: **{score_result['penalty']:,.0f}**"
+                )
+                viol_df = pd.DataFrame(feas_result["violations"])
+                st.dataframe(viol_df, use_container_width=True, hide_index=True)
+            else:
+                st.success("All constraints satisfied — solution is feasible.")
+
+            # ── STEP 2: Submit ────────────────────────────────────────────────
+            st.markdown("---")
+            submit_btn = st.button("🚀 Submit to Leaderboard", type="primary", use_container_width=True)
+
+            if submit_btn:
+                with st.spinner("Saving submission…"):
+                    db.save_submission(
+                        student_id   = st.session_state["student_id"],
+                        student_name = st.session_state["student_name"],
+                        score_result = score_result,
+                        obj_result   = obj_result,
+                        feas_result  = feas_result,
+                        raw_csv      = st.session_state["raw_csv"],
+                    )
+                    rank, total = db.get_rank(st.session_state["student_id"])
+
+                st.success(f"Submission saved! Your rank: **#{rank} of {total}**")
+
+                # History for this student
+                history = db.get_student_history(st.session_state["student_id"])
+                if len(history) > 1:
+                    st.markdown("#### 📈 Your Submission History")
+                    hist_df = pd.DataFrame(history)
+                    hist_df = hist_df.rename(columns={
+                        "submitted_at":    "Time",
+                        "score":           "Score",
+                        "objective_value": "Obj. Cost",
+                        "penalty":         "Penalty",
+                        "is_feasible":     "Feasible",
+                        "violation_count": "Violations",
+                    })
+                    hist_df["Feasible"] = hist_df["Feasible"].map({1: "✅", 0: "❌"})
+                    st.dataframe(hist_df[["Time","Score","Obj. Cost","Penalty","Feasible","Violations"]],
+                                 use_container_width=True, hide_index=True)
+
+                # Clear cached check state so next upload starts fresh
+                for k in ["checked","solution","raw_csv","feas_result","obj_result","score_result"]:
+                    st.session_state.pop(k, None)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
