@@ -64,6 +64,11 @@ def init_db(db_path: Path = DB_PATH) -> None:
                 raw_csv         TEXT
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS resubmit_tokens (
+                student_id TEXT PRIMARY KEY
+            )
+        """)
         conn.commit()
 
 
@@ -156,6 +161,43 @@ def get_student_history(student_id: str, db_path: Path = DB_PATH) -> list[dict]:
             ORDER BY submitted_at DESC
         """, (student_id,)).fetchall()
     return [dict(r) for r in rows]
+
+
+def has_submitted(student_id: str, db_path: Path = DB_PATH) -> bool:
+    """Return True if student has at least one submission."""
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM submissions WHERE student_id = ? LIMIT 1", (student_id,)
+        ).fetchone()
+    return row is not None
+
+
+def has_resubmit_token(student_id: str, db_path: Path = DB_PATH) -> bool:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM resubmit_tokens WHERE student_id = ?", (student_id,)
+        ).fetchone()
+    return row is not None
+
+
+def grant_resubmit(student_id: str, db_path: Path = DB_PATH) -> None:
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO resubmit_tokens (student_id) VALUES (?)", (student_id,)
+        )
+        conn.commit()
+
+
+def consume_resubmit_token(student_id: str, db_path: Path = DB_PATH) -> None:
+    with _connect(db_path) as conn:
+        conn.execute("DELETE FROM resubmit_tokens WHERE student_id = ?", (student_id,))
+        conn.commit()
+
+
+def get_resubmit_tokens(db_path: Path = DB_PATH) -> list[str]:
+    with _connect(db_path) as conn:
+        rows = conn.execute("SELECT student_id FROM resubmit_tokens").fetchall()
+    return [r["student_id"] for r in rows]
 
 
 def get_all_submissions(db_path: Path = DB_PATH) -> list[dict]:

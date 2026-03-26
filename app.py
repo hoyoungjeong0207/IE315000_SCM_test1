@@ -351,6 +351,13 @@ with tab_submit:
                     st.session_state.pop("checked", None)
                     st.stop()
 
+            # One-submission limit (bypass for "test" accounts)
+            if student_name.lower() != "test":
+                if db.has_submitted(student_id) and not db.has_resubmit_token(student_id):
+                    st.error("❌ You have already submitted. Contact the instructor if you need to resubmit.")
+                    st.session_state.pop("checked", None)
+                    st.stop()
+
             # Parse + evaluate (no DB write)
             with st.spinner("Parsing and evaluating your solution…"):
                 raw_bytes = uploaded.read()
@@ -444,6 +451,9 @@ with tab_submit:
                         feas_result  = feas_result,
                         raw_csv      = st.session_state["raw_csv"],
                     )
+                    # Consume resubmit token if one was used
+                    if st.session_state["student_name"].lower() != "test":
+                        db.consume_resubmit_token(st.session_state["student_id"])
                     rank, total = db.get_rank(st.session_state["student_id"])
 
                 st.success(f"Submission saved! Your rank: **#{rank} of {total}**")
@@ -733,3 +743,35 @@ with tab_admin:
                     deleted = db.delete_submissions(ids_to_delete)
                     st.success(f"Deleted {deleted} submission(s).")
                     st.rerun()
+
+    # ── Resubmit permission ───────────────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("🔓 Grant Resubmit Permission")
+    st.caption("Students with a resubmit token can submit once more. Token is consumed after use.")
+
+    tokens = db.get_resubmit_tokens()
+    if tokens:
+        st.markdown("**Currently granted:** " + ", ".join(tokens))
+    else:
+        st.markdown("**Currently granted:** None")
+
+    # Build list of students who have submitted (excluding test)
+    submitted_ids = list({r["student_id"] for r in rows if r["student_name"].lower() != "test"})
+    submitted_ids.sort()
+
+    grant_targets = st.multiselect(
+        "Select students to grant resubmit permission",
+        options=submitted_ids,
+        default=[sid for sid in submitted_ids if sid in tokens],
+    )
+
+    if st.button("💾 Save Resubmit Permissions"):
+        # Grant newly selected
+        for sid in grant_targets:
+            db.grant_resubmit(sid)
+        # Revoke deselected
+        for sid in tokens:
+            if sid not in grant_targets:
+                db.consume_resubmit_token(sid)
+        st.success("Resubmit permissions updated.")
+        st.rerun()
