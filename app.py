@@ -465,13 +465,13 @@ Variables with value 0 may be omitted (they default to 0),
     example_csv = """\
 variable,value
 y_F1,1
-y_F2,0
+y_F2,1
 y_F3,1
-x_S1_F1,200
-x_S1_F3,100
-x_S2_F3,90
+x_S1_F1,80
+x_S1_F2,120
+x_S2_F3,190
 x_F1_C1,80
-x_F1_C2,120
+x_F2_C2,120
 x_F3_C3,100
 x_F3_C4,90"""
     st.code(example_csv, language="csv")
