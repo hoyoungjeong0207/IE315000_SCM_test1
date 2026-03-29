@@ -351,10 +351,13 @@ with tab_submit:
                     st.session_state.pop("checked", None)
                     st.stop()
 
-            # One-submission limit (bypass for "test" accounts)
+            # 5-submission limit (bypass for "test" accounts)
+            MAX_SUBMISSIONS = 5
             if student_name.lower() != "test":
-                if db.has_submitted(student_id) and not db.has_resubmit_token(student_id):
-                    st.error("❌ You have already submitted. Contact the instructor if you need to resubmit.")
+                history = db.get_student_history(student_id)
+                attempts_used = len(history)
+                if attempts_used >= MAX_SUBMISSIONS and not db.has_resubmit_token(student_id):
+                    st.error(f"❌ You have reached the maximum of {MAX_SUBMISSIONS} submissions. Contact the instructor if you need an additional attempt.")
                     st.session_state.pop("checked", None)
                     st.stop()
 
