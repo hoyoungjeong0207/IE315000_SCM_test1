@@ -3,3 +3,5 @@ __pycache__/
 *.pyo
 data/submissions.db
 .env
+.streamlit/secrets.toml
+googlesheet/

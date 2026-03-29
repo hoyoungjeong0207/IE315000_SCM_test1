@@ -1,247 +1,279 @@
 """
-db.py — SQLite persistence layer.
+db.py — Google Sheets persistence layer.
 
-Tables
-──────
-submissions
-    id              INTEGER PK AUTOINCREMENT
-    student_id      TEXT NOT NULL
-    student_name    TEXT NOT NULL
-    submitted_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    score           INTEGER NOT NULL
-    objective_value REAL
-    penalty         REAL
-    effective_cost  REAL
-    is_feasible     INTEGER   (0 or 1)
-    fixed_cost      REAL
-    transport_sf    REAL
-    transport_fc    REAL
-    holding_cost    REAL
-    violation_count INTEGER
-    violation_json  TEXT      (JSON array of violation dicts)
-    raw_csv         TEXT      (original uploaded content)
+Worksheets
+──────────
+submissions     — one row per submission
+resubmit_tokens — one row per granted token (student_id only)
+
+Streamlit secrets required (.streamlit/secrets.toml):
+    [gcp_service_account]
+    type = "service_account"
+    project_id = "..."
+    private_key_id = "..."
+    private_key = "..."
+    client_email = "..."
+    ...
+
+    [sheet]
+    id = "YOUR_GOOGLE_SHEET_ID"
 """
 
 from __future__ import annotations
 
 import json
-import sqlite3
-from pathlib import Path
+from datetime import datetime, timezone
 
-DB_PATH = Path(__file__).parent / "data" / "submissions.db"
+import gspread
+import streamlit as st
+from google.oauth2.service_account import Credentials
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
+SUBMISSIONS_HEADERS = [
+    "id", "student_id", "student_name", "submitted_at",
+    "score", "objective_value", "penalty", "effective_cost",
+    "is_feasible", "fixed_cost", "transport_sf", "transport_fc",
+    "violation_count", "violation_json", "raw_csv",
+]
+TOKENS_HEADERS = ["student_id"]
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Connection (cached per session) ───────────────────────────────────────────
 
-def _connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    return conn
+@st.cache_resource
+def _get_spreadsheet():
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"], scopes=SCOPES
+    )
+    client = gspread.authorize(creds)
+    return client.open_by_key(st.secrets["sheet"]["id"])
+
+
+def _submissions_ws() -> gspread.Worksheet:
+    return _get_spreadsheet().worksheet("submissions")
+
+
+def _tokens_ws() -> gspread.Worksheet:
+    return _get_spreadsheet().worksheet("resubmit_tokens")
 
 
 # ── Schema ────────────────────────────────────────────────────────────────────
 
-def init_db(db_path: Path = DB_PATH) -> None:
-    """Create tables if they don't already exist."""
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    with _connect(db_path) as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS submissions (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                student_id      TEXT    NOT NULL,
-                student_name    TEXT    NOT NULL,
-                submitted_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                score           INTEGER NOT NULL,
-                objective_value REAL,
-                penalty         REAL,
-                effective_cost  REAL,
-                is_feasible     INTEGER,
-                fixed_cost      REAL,
-                transport_sf    REAL,
-                transport_fc    REAL,
-                violation_count INTEGER,
-                violation_json  TEXT,
-                raw_csv         TEXT
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS resubmit_tokens (
-                student_id TEXT PRIMARY KEY
-            )
-        """)
-        conn.commit()
+def init_db() -> None:
+    """Create worksheets with headers if they don't already exist."""
+    sh = _get_spreadsheet()
+    existing = [ws.title for ws in sh.worksheets()]
+
+    if "submissions" not in existing:
+        ws = sh.add_worksheet("submissions", rows=500, cols=len(SUBMISSIONS_HEADERS))
+        ws.append_row(SUBMISSIONS_HEADERS, value_input_option="RAW")
+
+    if "resubmit_tokens" not in existing:
+        ws = sh.add_worksheet("resubmit_tokens", rows=200, cols=1)
+        ws.append_row(TOKENS_HEADERS, value_input_option="RAW")
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _all_submissions() -> list[dict]:
+    """Return all submission rows as list of dicts (excludes header)."""
+    return _submissions_ws().get_all_records()
+
+
+def _next_id(rows: list[dict]) -> int:
+    if not rows:
+        return 1
+    return max(int(r["id"]) for r in rows) + 1
 
 
 # ── Write ─────────────────────────────────────────────────────────────────────
 
 def save_submission(
-    student_id:    str,
-    student_name:  str,
-    score_result:  dict,
-    obj_result:    dict,
-    feas_result:   dict,
-    raw_csv:       str,
-    db_path: Path = DB_PATH,
+    student_id:   str,
+    student_name: str,
+    score_result: dict,
+    obj_result:   dict,
+    feas_result:  dict,
+    raw_csv:      str,
 ) -> int:
-    """Insert a submission row and return the new row id."""
-    with _connect(db_path) as conn:
-        cursor = conn.execute("""
-            INSERT INTO submissions
-                (student_id, student_name, score, objective_value, penalty,
-                 effective_cost, is_feasible, fixed_cost, transport_sf,
-                 transport_fc, violation_count, violation_json, raw_csv)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, (
-            student_id,
-            student_name,
-            score_result["score"],
-            obj_result["total_cost"],
-            score_result["penalty"],
-            score_result["effective_cost"],
-            1 if feas_result["is_feasible"] else 0,
-            obj_result["fixed_cost"],
-            obj_result["transport_cost_sf"],
-            obj_result["transport_cost_fc"],
-            len(feas_result["violations"]),
-            json.dumps(feas_result["violations"]),
-            raw_csv,
-        ))
-        conn.commit()
-        return cursor.lastrowid
+    """Append a submission row and return its id."""
+    ws = _submissions_ws()
+    rows = _all_submissions()
+    new_id = _next_id(rows)
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+    row = [
+        new_id,
+        student_id,
+        student_name,
+        now,
+        score_result["score"],
+        obj_result["total_cost"],
+        score_result["penalty"],
+        score_result["effective_cost"],
+        1 if feas_result["is_feasible"] else 0,
+        obj_result["fixed_cost"],
+        obj_result["transport_cost_sf"],
+        obj_result["transport_cost_fc"],
+        len(feas_result["violations"]),
+        json.dumps(feas_result["violations"]),
+        raw_csv,
+    ]
+    ws.append_row(row, value_input_option="RAW")
+    return new_id
 
 
 # ── Read ──────────────────────────────────────────────────────────────────────
 
-def get_leaderboard(top_n: int = 30, db_path: Path = DB_PATH) -> list[dict]:
-    """
-    Return one row per student showing their best score.
-    Ranked by best score descending, then by earliest best submission time.
-    """
-    with _connect(db_path) as conn:
-        rows = conn.execute("""
-            SELECT
-                ROW_NUMBER() OVER (ORDER BY best_score DESC, best_at ASC) AS rank,
-                student_id,
-                student_name,
-                best_score,
-                best_objective,
-                best_feasible,
-                attempts,
-                best_at
-            FROM (
-                SELECT
-                    s.student_id,
-                    s.student_name,
-                    s.score           AS best_score,
-                    s.objective_value AS best_objective,
-                    s.is_feasible     AS best_feasible,
-                    c.attempts,
-                    s.submitted_at    AS best_at
-                FROM submissions s
-                JOIN (
-                    SELECT student_id, MAX(score) AS max_score, COUNT(*) AS attempts
-                    FROM submissions
-                    GROUP BY student_id
-                ) c ON s.student_id = c.student_id AND s.score = c.max_score
-                GROUP BY s.student_id
-            )
-            LIMIT ?
-        """, (top_n,)).fetchall()
-    return [dict(r) for r in rows]
+def get_leaderboard(top_n: int = 30) -> list[dict]:
+    """Return one row per student with their best score, ranked."""
+    rows = _all_submissions()
+    if not rows:
+        return []
+
+    # Group by student_id, keep row with highest score (tie-break: earliest time)
+    best: dict[str, dict] = {}
+    attempts: dict[str, int] = {}
+
+    for r in rows:
+        sid = str(r["student_id"])
+        attempts[sid] = attempts.get(sid, 0) + 1
+        score = int(r["score"])
+        if sid not in best or score > int(best[sid]["score"]):
+            best[sid] = r
+        elif score == int(best[sid]["score"]):
+            if str(r["submitted_at"]) < str(best[sid]["submitted_at"]):
+                best[sid] = r
+
+    ranked = sorted(
+        best.values(),
+        key=lambda r: (-int(r["score"]), str(r["submitted_at"])),
+    )[:top_n]
+
+    result = []
+    for i, r in enumerate(ranked, start=1):
+        sid = str(r["student_id"])
+        result.append({
+            "rank":           i,
+            "student_id":     sid,
+            "student_name":   r["student_name"],
+            "best_score":     int(r["score"]),
+            "best_objective": float(r["objective_value"]) if r["objective_value"] != "" else None,
+            "best_feasible":  int(r["is_feasible"]),
+            "attempts":       attempts.get(sid, 1),
+            "best_at":        r["submitted_at"],
+        })
+    return result
 
 
-def get_student_history(student_id: str, db_path: Path = DB_PATH) -> list[dict]:
+def get_student_history(student_id: str) -> list[dict]:
     """Return all submissions for one student, newest first."""
-    with _connect(db_path) as conn:
-        rows = conn.execute("""
-            SELECT id, submitted_at, score, objective_value, penalty,
-                   effective_cost, is_feasible, violation_count
-            FROM submissions
-            WHERE student_id = ?
-            ORDER BY submitted_at DESC
-        """, (student_id,)).fetchall()
-    return [dict(r) for r in rows]
+    rows = _all_submissions()
+    student_rows = [r for r in rows if str(r["student_id"]) == student_id]
+    student_rows.sort(key=lambda r: str(r["submitted_at"]), reverse=True)
+    return [
+        {
+            "id":              int(r["id"]),
+            "submitted_at":    r["submitted_at"],
+            "score":           int(r["score"]),
+            "objective_value": float(r["objective_value"]) if r["objective_value"] != "" else None,
+            "penalty":         float(r["penalty"]) if r["penalty"] != "" else None,
+            "effective_cost":  float(r["effective_cost"]) if r["effective_cost"] != "" else None,
+            "is_feasible":     int(r["is_feasible"]),
+            "violation_count": int(r["violation_count"]) if r["violation_count"] != "" else 0,
+        }
+        for r in student_rows
+    ]
 
 
-def has_submitted(student_id: str, db_path: Path = DB_PATH) -> bool:
-    """Return True if student has at least one submission."""
-    with _connect(db_path) as conn:
-        row = conn.execute(
-            "SELECT 1 FROM submissions WHERE student_id = ? LIMIT 1", (student_id,)
-        ).fetchone()
-    return row is not None
+def has_submitted(student_id: str) -> bool:
+    rows = _all_submissions()
+    return any(str(r["student_id"]) == student_id for r in rows)
 
 
-def has_resubmit_token(student_id: str, db_path: Path = DB_PATH) -> bool:
-    with _connect(db_path) as conn:
-        row = conn.execute(
-            "SELECT 1 FROM resubmit_tokens WHERE student_id = ?", (student_id,)
-        ).fetchone()
-    return row is not None
-
-
-def grant_resubmit(student_id: str, db_path: Path = DB_PATH) -> None:
-    with _connect(db_path) as conn:
-        conn.execute(
-            "INSERT OR IGNORE INTO resubmit_tokens (student_id) VALUES (?)", (student_id,)
-        )
-        conn.commit()
-
-
-def consume_resubmit_token(student_id: str, db_path: Path = DB_PATH) -> None:
-    with _connect(db_path) as conn:
-        conn.execute("DELETE FROM resubmit_tokens WHERE student_id = ?", (student_id,))
-        conn.commit()
-
-
-def get_resubmit_tokens(db_path: Path = DB_PATH) -> list[str]:
-    with _connect(db_path) as conn:
-        rows = conn.execute("SELECT student_id FROM resubmit_tokens").fetchall()
-    return [r["student_id"] for r in rows]
-
-
-def get_all_submissions(db_path: Path = DB_PATH) -> list[dict]:
+def get_all_submissions() -> list[dict]:
     """Return every submission row for admin review, newest first."""
-    with _connect(db_path) as conn:
-        rows = conn.execute("""
-            SELECT id, submitted_at, student_id, student_name,
-                   score, objective_value, is_feasible
-            FROM submissions
-            ORDER BY submitted_at DESC
-        """).fetchall()
-    return [dict(r) for r in rows]
+    rows = _all_submissions()
+    rows_sorted = sorted(rows, key=lambda r: str(r["submitted_at"]), reverse=True)
+    return [
+        {
+            "id":              int(r["id"]),
+            "submitted_at":    r["submitted_at"],
+            "student_id":      str(r["student_id"]),
+            "student_name":    r["student_name"],
+            "score":           int(r["score"]),
+            "objective_value": float(r["objective_value"]) if r["objective_value"] != "" else None,
+            "is_feasible":     int(r["is_feasible"]),
+        }
+        for r in rows_sorted
+    ]
 
 
-def delete_submissions(ids: list[int], db_path: Path = DB_PATH) -> int:
-    """Delete submissions by row id list. Returns number of rows deleted."""
+def delete_submissions(ids: list[int]) -> int:
+    """Delete submissions by id list. Returns number of rows deleted."""
     if not ids:
         return 0
-    placeholders = ",".join("?" * len(ids))
-    with _connect(db_path) as conn:
-        cursor = conn.execute(
-            f"DELETE FROM submissions WHERE id IN ({placeholders})", ids
-        )
-        conn.commit()
-    return cursor.rowcount
+
+    ws = _submissions_ws()
+    all_rows = ws.get_all_values()  # includes header row
+    ids_set = {int(i) for i in ids}
+
+    # Collect 1-based sheet row indices to delete (row 1 = header)
+    to_delete = []
+    for sheet_row_idx, row in enumerate(all_rows[1:], start=2):
+        if row and str(row[0]).isdigit() and int(row[0]) in ids_set:
+            to_delete.append(sheet_row_idx)
+
+    # Delete from bottom to top so indices stay valid
+    for row_idx in sorted(to_delete, reverse=True):
+        ws.delete_rows(row_idx)
+
+    return len(to_delete)
 
 
-def get_rank(student_id: str, db_path: Path = DB_PATH) -> tuple[int, int]:
-    """
-    Return (rank, total_students) for the student's best score.
-    Returns (0, total) if not found.
-    """
-    with _connect(db_path) as conn:
-        best_scores = conn.execute("""
-            SELECT student_id, MAX(score) AS best_score
-            FROM submissions
-            GROUP BY student_id
-            ORDER BY best_score DESC
-        """).fetchall()
+def get_rank(student_id: str) -> tuple[int, int]:
+    """Return (rank, total_students) for the student's best score."""
+    rows = _all_submissions()
+    best_by_student: dict[str, int] = {}
+    for r in rows:
+        sid = str(r["student_id"])
+        score = int(r["score"])
+        if sid not in best_by_student or score > best_by_student[sid]:
+            best_by_student[sid] = score
 
-    student_ids = [r["student_id"] for r in best_scores]
-    total = len(student_ids)
+    sorted_sids = sorted(best_by_student, key=lambda s: -best_by_student[s])
+    total = len(sorted_sids)
     try:
-        rank = student_ids.index(student_id) + 1
+        rank = sorted_sids.index(student_id) + 1
     except ValueError:
         rank = 0
     return rank, total
+
+
+# ── Resubmit tokens ───────────────────────────────────────────────────────────
+
+def has_resubmit_token(student_id: str) -> bool:
+    records = _tokens_ws().get_all_records()
+    return any(str(r["student_id"]) == student_id for r in records)
+
+
+def grant_resubmit(student_id: str) -> None:
+    if not has_resubmit_token(student_id):
+        _tokens_ws().append_row([student_id], value_input_option="RAW")
+
+
+def consume_resubmit_token(student_id: str) -> None:
+    ws = _tokens_ws()
+    all_rows = ws.get_all_values()
+    for sheet_row_idx, row in enumerate(all_rows[1:], start=2):
+        if row and str(row[0]) == student_id:
+            ws.delete_rows(sheet_row_idx)
+            return
+
+
+def get_resubmit_tokens() -> list[str]:
+    records = _tokens_ws().get_all_records()
+    return [str(r["student_id"]) for r in records]
