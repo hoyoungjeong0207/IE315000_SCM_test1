@@ -32,6 +32,21 @@ from google.oauth2.service_account import Credentials
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
+# Streamlit secrets layout (two supported formats):
+#
+# Format A — JSON string (recommended, avoids TOML multiline issues):
+#   gcp_json = '{"type":"service_account","private_key":"-----BEGIN...",...}'
+#   [sheet]
+#   id = "SHEET_ID"
+#
+# Format B — expanded TOML table (legacy):
+#   [gcp_service_account]
+#   type = "service_account"
+#   private_key = "..."
+#   ...
+#   [sheet]
+#   id = "SHEET_ID"
+
 SUBMISSIONS_HEADERS = [
     "id", "student_id", "student_name", "submitted_at",
     "score", "objective_value", "penalty", "effective_cost",
@@ -45,9 +60,13 @@ TOKENS_HEADERS = ["student_id"]
 
 @st.cache_resource
 def _get_spreadsheet():
-    creds = Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"], scopes=SCOPES
-    )
+    if "gcp_json" in st.secrets:
+        # Format A: entire service account JSON stored as a string
+        creds_info = json.loads(st.secrets["gcp_json"])
+    else:
+        # Format B: expanded TOML table
+        creds_info = dict(st.secrets["gcp_service_account"])
+    creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
     client = gspread.authorize(creds)
     return client.open_by_key(st.secrets["sheet"]["id"])
 
