@@ -72,7 +72,7 @@ def _get_spreadsheet():
 
 
 def _submissions_ws() -> gspread.Worksheet:
-    return _get_spreadsheet().worksheet("submissions")
+    return _get_spreadsheet().worksheet("IE315000_1")
 
 
 def _tokens_ws() -> gspread.Worksheet:
@@ -86,8 +86,8 @@ def init_db() -> None:
     sh = _get_spreadsheet()
     existing = [ws.title for ws in sh.worksheets()]
 
-    if "submissions" not in existing:
-        ws = sh.add_worksheet("submissions", rows=500, cols=len(SUBMISSIONS_HEADERS))
+    if "IE315000_1" not in existing:
+        ws = sh.add_worksheet("IE315000_1", rows=500, cols=len(SUBMISSIONS_HEADERS))
         ws.append_row(SUBMISSIONS_HEADERS, value_input_option="RAW")
 
     if "resubmit_tokens" not in existing:
