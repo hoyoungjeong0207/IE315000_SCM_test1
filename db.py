@@ -89,10 +89,18 @@ def init_db() -> None:
     if "IE315000_1" not in existing:
         ws = sh.add_worksheet("IE315000_1", rows=500, cols=len(SUBMISSIONS_HEADERS))
         ws.append_row(SUBMISSIONS_HEADERS, value_input_option="RAW")
+    else:
+        ws = sh.worksheet("IE315000_1")
+        if not ws.row_values(1):
+            ws.append_row(SUBMISSIONS_HEADERS, value_input_option="RAW")
 
     if "resubmit_tokens" not in existing:
         ws = sh.add_worksheet("resubmit_tokens", rows=200, cols=1)
         ws.append_row(TOKENS_HEADERS, value_input_option="RAW")
+    else:
+        ws = sh.worksheet("resubmit_tokens")
+        if not ws.row_values(1):
+            ws.append_row(TOKENS_HEADERS, value_input_option="RAW")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
